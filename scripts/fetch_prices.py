@@ -150,11 +150,19 @@ def update_zone(code: str, root: Path, now: datetime, fetcher=fetch) -> dict:
     idx.update({"schema_version": SCHEMA, "zone": code, "bidding_zone": cfg["bzn"],
                 "timezone": cfg["tz"], "checked_at": iso(now), "license": LICENSE, "source": SOURCE})
     try:
-        t, p = validate(fetcher(cfg["bzn"], start, end))
+        raw = fetcher(cfg["bzn"], start, end)
+        fetched = iso(now)
+        if not raw:
+            # El origen contesta pero no tiene nada (404 / vacio): la comprobacion
+            # cuenta como hecha. Si no llegan dias nuevos, last_data_date se queda
+            # atras y la app lo interpreta como "el mercado dejo de publicarse".
+            idx["fetched_at"] = fetched
+            idx["last_error"] = "upstream returned no content"
+            raise StopIteration
+        t, p = validate(raw)
         days = split_days(t, p, tz)
         if not days:
             raise ValueError("sin precios")
-        fetched = iso(now)
         for d, (ts, pr) in days.items():
             path = zdir / f"{d}.json"
             prev = read_json(path)
@@ -165,6 +173,8 @@ def update_zone(code: str, root: Path, now: datetime, fetcher=fetch) -> dict:
             write_json(path, day_doc(code, d, ts, pr, fetched))
         idx["fetched_at"] = fetched
         idx["last_error"] = None
+    except StopIteration:
+        pass
     except Exception as e:
         idx["last_error"] = f"{type(e).__name__}: {e}"[:300]
     limite = (today - timedelta(days=KEEP_DAYS)).isoformat()
